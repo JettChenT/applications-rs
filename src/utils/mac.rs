@@ -77,7 +77,7 @@ pub struct InfoPlist {
 
 impl InfoPlist {
     pub fn from_value(value: &plist::Value) -> Result<InfoPlist> {
-        let info_plist = plist::from_value(value).unwrap();
+        let info_plist = plist::from_value(value)?;
         Ok(info_plist)
     }
 
@@ -86,7 +86,7 @@ impl InfoPlist {
             Ok(info_plist) => Ok(info_plist),
             Err(_) => match plist::Value::from_file(path) {
                 // using plist::Value is a workaround for the error "duplicate key: CFBundleShortVersionString"
-                Ok(value) => Ok(InfoPlist::from_value(&value).unwrap()),
+                Ok(value) => InfoPlist::from_value(&value),
                 Err(err) => Err(anyhow::Error::msg(format!(
                     "Fail to parse plist: {}",
                     err.to_string()
@@ -96,7 +96,8 @@ impl InfoPlist {
     }
 
     pub fn from_string(s: &str) -> Result<InfoPlist> {
-        Ok(plist::from_bytes(s.as_bytes()).expect("failed to read info.plist"))
+        plist::from_bytes(s.as_bytes())
+            .map_err(|e| anyhow::Error::msg(format!("Failed to read info.plist: {}", e)))
     }
 }
 
@@ -107,7 +108,9 @@ pub fn run_system_profiler_to_get_app_list() -> Result<String> {
         .arg("SPApplicationsDataType")
         .arg("-json")
         .output()?;
-    Ok(std::str::from_utf8(&output.stdout).unwrap().to_string())
+    let stdout_str = std::str::from_utf8(&output.stdout)
+        .map_err(|e| anyhow::Error::msg(format!("Failed to parse command output as UTF-8: {}", e)))?;
+    Ok(stdout_str.to_string())
 }
 
 pub fn run_mdfind_to_get_app_list() -> Result<Vec<String>> {
@@ -180,25 +183,25 @@ impl MacAppPath {
         let wrapper_path_str = wrapper_path.to_str()?;
         // search for .app in the wrapper
         let glob_path = format!("{}/*.app", wrapper_path_str);
-        if let Some(e) = glob(&glob_path)
-            .expect("Failed to read glob pattern")
-            .next()
-        {
-            return Some(e.unwrap());
+        let mut glob_result = glob(&glob_path).ok()?;
+        if let Some(e) = glob_result.next() {
+            return e.ok();
         }
         None
     }
 
-    pub fn get_bundle(&self) -> CFBundle {
-        CFBundle::new(CFURL::from_path(&self.0, true).expect("Fail to create CFURL"))
-            .expect("Fail to create CFBundle")
+    pub fn get_bundle(&self) -> Result<CFBundle> {
+        let url = CFURL::from_path(&self.0, true)
+            .ok_or_else(|| anyhow::Error::msg("Failed to create CFURL from path"))?;
+        CFBundle::new(url)
+            .ok_or_else(|| anyhow::Error::msg("Failed to create CFBundle"))
     }
 
-    pub fn get_executable_path_with_bundle(&self) -> Option<PathBuf> {
-        let bundle = self.get_bundle();
+    pub fn get_executable_path_with_bundle(&self) -> Result<Option<PathBuf>> {
+        let bundle = self.get_bundle()?;
         match bundle.executable_url() {
-            Some(url) => url.to_path(),
-            None => None,
+            Some(url) => Ok(url.to_path()),
+            None => Ok(None),
         }
     }
 
